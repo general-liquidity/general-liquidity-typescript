@@ -23,6 +23,24 @@ export type { RetryPolicy } from "./internal/http.ts";
 export { DEFAULT_RETRY } from "./internal/http.ts";
 export type { Signer } from "./signer/signer.ts";
 export { signIntent } from "./signer/signer.ts";
+// Operator authority — a SEPARATE credential domain from the agent bearer token. The
+// OperatorClient signs the detached `GL-Operator` ed25519 credential the hosted
+// `/operator/*` routes verify; the agent client never mints it.
+export {
+  bytesToBase64Url,
+  canonicalUrl,
+  formatOperatorCredential,
+  OPERATOR_CREDENTIAL_VERSION,
+  OPERATOR_HEADER,
+  type OperatorCredential,
+  type OperatorOperation,
+  operatorBodyDigest,
+  operatorSigningInput,
+} from "./operator/credential.ts";
+export type { OperatorClientConfig } from "./operator/client.ts";
+export { createOperatorClient, OperatorClient, signOperatorRequest } from "./operator/client.ts";
+export type { OperatorSigner } from "./operator/signer.ts";
+export { operatorSignerFromSeed } from "./operator/signer.ts";
 export type { OtelApi } from "./tracing/otel.ts";
 export { loadOtelTracer, otelTracer } from "./tracing/otel.ts";
 export type { AttributeValue, Span, SpanAttributes, Tracer } from "./tracing/tracer.ts";
