@@ -14,7 +14,9 @@
 import { errorFromProblem, type Problem } from "../internal/errors.ts";
 import type {
   CreateWebhookEndpoint,
+  ErasureProof,
   FetchLike,
+  ForgetRequest,
   OperatorApprove,
   OperatorRefund,
   OperatorStateView,
@@ -26,6 +28,7 @@ import type {
 } from "../types.ts";
 import {
   formatOperatorCredential,
+  type MemoryOperatorOperation,
   OPERATOR_HEADER,
   type OperatorOperation,
   operatorBodyDigest,
@@ -54,7 +57,7 @@ export interface OperatorClientConfig {
  */
 export async function signOperatorRequest(params: {
   signer: OperatorSigner;
-  operation: OperatorOperation | WebhookOperatorOperation;
+  operation: OperatorOperation | WebhookOperatorOperation | MemoryOperatorOperation;
   method: string;
   url: string;
   body: string;
@@ -151,6 +154,19 @@ export class OperatorClient {
   }
 
   /**
+   * Cascading erasure of a memory record and its dependents (`POST /memory/forget`).
+   * OPERATOR authority — it rides the SAME `GL-Operator` credential as approve/refund, never
+   * the agent key, and the mandate's `canErase` is checked in addition server-side. Returns
+   * the signed ErasureProof. The body is sent verbatim (memory wire is camelCase).
+   */
+  memoryForget(req: ForgetRequest): Promise<ErasureProof> {
+    return this.call<ErasureProof>("memory:forget", "/memory/forget", {
+      mandate: req.mandate,
+      rootId: req.rootId,
+    });
+  }
+
+  /**
    * Register a webhook endpoint. OPERATOR authority — an endpoint that receives
    * settlement/audit events is gated by the `GL-Operator` credential, not the agent key.
    * The `whsec_` signing secret is returned ONCE, on this call; the reads never re-expose it.
@@ -241,7 +257,7 @@ export class OperatorClient {
   }
 
   private async call<T>(
-    operation: OperatorOperation,
+    operation: OperatorOperation | MemoryOperatorOperation,
     path: string,
     bodyObj: Record<string, unknown>,
   ): Promise<T> {

@@ -33,6 +33,13 @@ export type OperatorOperation =
  */
 export type WebhookOperatorOperation = `webhook:${"get" | "post" | "patch" | "delete"}`;
 
+/**
+ * The memory-scoped operator operation. `POST /memory/forget` (cascading erasure) rides the
+ * SAME operator signing input as the settle-path verbs — the server binds it as
+ * `memory:forget` — so a credential minted for it cannot be replayed onto approve/refund.
+ */
+export type MemoryOperatorOperation = "memory:forget";
+
 /** base64url SHA-256 of the raw request body bytes. An empty body hashes as empty. */
 export async function operatorBodyDigest(body: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body));

@@ -78,6 +78,31 @@ export class Http {
   }
 
   /**
+   * POST a body verbatim (no camelCase↔snake_case mapping) and decode the response verbatim.
+   * The memory group uses this: its wire fields are already camelCase and a MemoryRecord
+   * `body` is an arbitrary caller payload that must not be key-mapped. Success is 200 only,
+   * so a `202 memory.pending` falls through to the typed-error path instead of decoding as a
+   * record. Retry/backoff on 429/5xx is unchanged.
+   */
+  async postRaw<T>(
+    path: string,
+    body: unknown,
+    headers: Record<string, string> = {},
+    span?: Span,
+  ): Promise<T> {
+    const url = new URL(path, this.cfg.baseUrl).toString();
+    const payload = JSON.stringify(body);
+    return this.execute<T>(
+      "POST",
+      url,
+      { "content-type": "application/json", ...headers },
+      payload,
+      span,
+      true,
+    );
+  }
+
+  /**
    * GET a read surface, decoding the snake_case response to camelCase. Query values are
    * appended in order; arrays repeat the key (the spec's repeatable `tags`). Shares the
    * same retry/backoff and typed-error path as POST.
@@ -102,6 +127,7 @@ export class Http {
     headers: Record<string, string>,
     payload: string | undefined,
     span?: Span,
+    raw = false,
   ): Promise<T> {
     const sleep = this.cfg.sleep ?? defaultSleep;
     const rand = this.cfg.random ?? Math.random;
@@ -142,10 +168,12 @@ export class Http {
 
       span?.setAttribute("gl.http.status", res.status);
 
-      if (res.ok) {
-        if (res.status === 204) return undefined as T;
-        const decoded = fromWire((await res.json()) as unknown);
-        return decoded as T;
+      // Raw memory calls succeed on 200 alone: a 202 (memory.pending) is a parked write and
+      // routes through the typed-error path so the caller cannot mistake it for a record.
+      if (raw ? res.status === 200 : res.ok) {
+        if (!raw && res.status === 204) return undefined as T;
+        const body = (await res.json()) as unknown;
+        return (raw ? body : fromWire(body)) as T;
       }
 
       const retryAfterMs = parseRetryAfter(res.headers.get("retry-after"));

@@ -2,6 +2,8 @@ import { DEFAULT_RETRY, Http, type RetryPolicy } from "./internal/http.ts";
 import { type Signer, signIntent } from "./signer/signer.ts";
 import { noopTracer, type Span, type Tracer } from "./tracing/tracer.ts";
 import type {
+  AssembledContext,
+  AssembleRequest,
   AuditEvent,
   Counterparty,
   Decision,
@@ -10,9 +12,14 @@ import type {
   GeneralLiquidity,
   Intent,
   Job,
+  MemoryRecord,
+  MemoryVerification,
   Page,
   PageQuery,
+  RecallRequest,
   Receipt,
+  RememberRequest,
+  SnapshotPage,
   UsageQuery,
   UsageSummary,
 } from "./types.ts";
@@ -142,6 +149,55 @@ class GlClient implements GeneralLiquidity {
         { since: query.since, until: query.until, tags: query.tags },
         span,
       ),
+    );
+  }
+
+  // Memory group. Sent verbatim (no camelCase↔snake_case mapping): the memory wire is
+  // already camelCase and a MemoryRecord `body` is an arbitrary caller payload.
+
+  memoryRemember(req: RememberRequest): Promise<MemoryRecord> {
+    return this.traced("memory_remember", (span) =>
+      this.http.postRaw<MemoryRecord>("memory/remember", req, {}, span),
+    );
+  }
+
+  memoryRecall(req: RecallRequest, page: PageQuery = {}): Promise<SnapshotPage> {
+    return this.traced("memory_recall", async (span) => {
+      // Recall pagination rides the query string (the server reads `?cursor=&limit=`), not
+      // the body. The seal covers the complete snapshot regardless of the page.
+      const qs = new URLSearchParams();
+      if (page.cursor !== undefined) qs.set("cursor", page.cursor);
+      if (page.limit !== undefined) qs.set("limit", String(page.limit));
+      const query = qs.toString();
+      const path = query ? `memory/recall?${query}` : "memory/recall";
+      const wire = await this.http.postRaw<{
+        data: MemoryRecord[];
+        has_more: boolean;
+        next_cursor: string | null;
+        validAt: string;
+        txAt: string;
+        seal: SnapshotPage["seal"];
+      }>(path, req, {}, span);
+      return {
+        data: wire.data,
+        hasMore: wire.has_more,
+        nextCursor: wire.next_cursor,
+        validAt: wire.validAt,
+        txAt: wire.txAt,
+        seal: wire.seal,
+      };
+    });
+  }
+
+  memoryAssemble(req: AssembleRequest): Promise<AssembledContext> {
+    return this.traced("memory_assemble", (span) =>
+      this.http.postRaw<AssembledContext>("memory/assemble", req, {}, span),
+    );
+  }
+
+  memoryVerify(artifact: unknown): Promise<MemoryVerification> {
+    return this.traced("memory_verify", (span) =>
+      this.http.postRaw<MemoryVerification>("memory/verify", { artifact }, {}, span),
     );
   }
 }

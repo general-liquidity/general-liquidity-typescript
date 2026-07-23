@@ -321,6 +321,10 @@ export type WebhookEventType =
   | "payment.settled"
   | "intent.denied"
   | "approval.pending"
+  | "memory.recorded"
+  | "memory.tainted"
+  | "memory.erased"
+  | "memory.consolidated"
   | "audit.appended";
 
 /** A registered delivery endpoint as the reads expose it (secret redacted). */
@@ -367,6 +371,156 @@ export interface WebhookEvent {
   data: Record<string, unknown>;
 }
 
+// The memory capability group: bi-temporal, signed, no-lookahead agent memory. Distinct
+// wire convention from the money path — memory fields are camelCase ON THE WIRE (the
+// server reads `validFrom`/`canRead`/`rootId` verbatim), and a MemoryRecord `body` is an
+// arbitrary caller payload, so these bodies bypass the camelCase↔snake_case mapping.
+// remember/recall/assemble/verify are AGENT authority; `forget` (cascading erasure) is
+// OPERATOR authority and rides the OperatorClient, not this agent client.
+
+/** A sealed hash+signature pair carried by every signed memory artifact. */
+export interface Seal {
+  hash: string;
+  signature: string;
+}
+
+/**
+ * Scopes an agent's memory authority — the memory analog of the spend Mandate. `asOfFloor`
+ * bounds how far back a recall may reach (a recall `validAt` earlier than it is refused).
+ */
+export interface MemoryMandate {
+  namespace: string;
+  canRead: boolean;
+  canWrite: boolean;
+  canErase: boolean;
+  /** ISO-8601 instant. */
+  asOfFloor?: string;
+}
+
+/** One edge on a memory record: a typed relation to another record id. */
+export interface MemoryEdge {
+  relation: string;
+  to: string;
+}
+
+/**
+ * One bi-temporal memory record. `validFrom`/`validTo` are the VALID-time window (the world
+ * the fact is about); `recordedAt`/`invalidatedAt` are the TRANSACTION-time window (when the
+ * store learned it). No-lookahead: a snapshot at a past instant never reveals a later edit.
+ */
+export interface MemoryRecord {
+  id: string;
+  /** The arbitrary record payload. Passed verbatim — never key-mapped. */
+  body?: unknown;
+  /** ISO-8601 instant. */
+  validFrom: string;
+  /** ISO-8601 instant, or null for an open-ended record. */
+  validTo: string | null;
+  /** ISO-8601 instant. */
+  recordedAt: string;
+  /** ISO-8601 instant, or null while the record is still current. */
+  invalidatedAt: string | null;
+  edges: MemoryEdge[];
+  taint: boolean;
+  source: string;
+}
+
+/** A point-in-time snapshot — the records valid at `validAt`/`txAt`, under one seal. */
+export interface Snapshot {
+  records: MemoryRecord[];
+  /** ISO-8601 instant. */
+  validAt: string;
+  /** ISO-8601 instant. */
+  txAt: string;
+  seal: Seal;
+}
+
+/**
+ * A cursor page over a snapshot's records. The seal covers the COMPLETE snapshot, not just
+ * this page. Pagination fields are surfaced camelCase here to match the SDK's `Page<T>`.
+ */
+export interface SnapshotPage {
+  data: MemoryRecord[];
+  /** True when records remain after this page. */
+  hasMore: boolean;
+  /** Token for the next page, or null when `hasMore` is false. */
+  nextCursor: string | null;
+  /** ISO-8601 instant. */
+  validAt: string;
+  /** ISO-8601 instant. */
+  txAt: string;
+  seal: Seal;
+}
+
+/**
+ * A budgeted, ordered context assembled from a snapshot, under one seal. Abstention
+ * (`abstained: true`) is a valid result — the engine declining to fill the budget.
+ */
+export interface AssembledContext {
+  records: MemoryRecord[];
+  /** The record ids in assembled order. */
+  order: string[];
+  budget: { maxTokens: number };
+  abstained: boolean;
+  abstainReason?: string;
+  seal: Seal;
+}
+
+/** The signed cascading-erasure proof `forget` returns — the erased ids under a seal. */
+export interface ErasureProof {
+  erased: string[];
+  proof: Seal;
+}
+
+/** A gated memory write. The mandate needs `canWrite`. */
+export interface RememberRequest {
+  mandate: MemoryMandate;
+  /** The arbitrary record payload. Passed verbatim — never key-mapped. */
+  body?: unknown;
+  /** ISO-8601 instant. */
+  validFrom: string;
+  /** ISO-8601 instant, or null for an open-ended record. */
+  validTo: string | null;
+  edges?: MemoryEdge[];
+  source: string;
+}
+
+/** A point-in-time read. The mandate needs `canRead`. */
+export interface RecallRequest {
+  mandate: MemoryMandate;
+  /** ISO-8601 instant. */
+  validAt: string;
+  /** ISO-8601 instant. */
+  txAt: string;
+  namespace?: string;
+}
+
+/** Budgeted context assembly over a supplied snapshot OR recall params. */
+export interface AssembleRequest {
+  mandate: MemoryMandate;
+  snapshot?: Snapshot;
+  recall?: {
+    /** ISO-8601 instant. */
+    validAt: string;
+    /** ISO-8601 instant. */
+    txAt: string;
+  };
+  budget: { maxTokens: number };
+  namespace?: string;
+}
+
+/** Cascading erasure of a root and its dependents. Operator-privileged; needs `canErase`. */
+export interface ForgetRequest {
+  mandate: MemoryMandate;
+  rootId: string;
+}
+
+/** The verdict `memoryVerify` returns for a signed artifact. */
+export interface MemoryVerification {
+  valid: boolean;
+  reason?: string;
+}
+
 /**
  * The canonical General Liquidity surface. Small, task-shaped, self-describing —
  * every method is also an MCP tool name. The agent submits signed intents; the
@@ -396,4 +550,26 @@ export interface GeneralLiquidity {
 
   /** Read metered call counts for the authenticated principal (`GET /usage`). */
   getUsage(query: UsageQuery): Promise<UsageSummary>;
+
+  /**
+   * Write one bi-temporal memory record under a mandate (`POST /memory/remember`). Returns
+   * the signed record on `allow`; a parked write surfaces as a `memory.pending` GlError and
+   * an engine/mandate refusal as `memory.denied` / `memory.forbidden`.
+   */
+  memoryRemember(req: RememberRequest): Promise<MemoryRecord>;
+
+  /**
+   * Read a sealed point-in-time snapshot, cursor-paginated (`POST /memory/recall`). The seal
+   * covers the complete snapshot; page with the returned `nextCursor`.
+   */
+  memoryRecall(req: RecallRequest, page?: PageQuery): Promise<SnapshotPage>;
+
+  /** Assemble a budgeted, signed context from a snapshot (`POST /memory/assemble`). */
+  memoryAssemble(req: AssembleRequest): Promise<AssembledContext>;
+
+  /**
+   * Verify a signed memory artifact offline (`POST /memory/verify`). Free + unmetered: it
+   * reaches no store and needs no mandate.
+   */
+  memoryVerify(artifact: unknown): Promise<MemoryVerification>;
 }

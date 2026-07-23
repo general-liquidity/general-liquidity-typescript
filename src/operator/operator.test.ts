@@ -141,6 +141,59 @@ describe("OperatorClient", () => {
     });
   });
 
+  test("memoryForget sends {mandate, rootId} on the operator credential and returns the proof", async () => {
+    const proof = { erased: ["mem-root", "mem-child"], proof: { hash: "h", signature: "s" } };
+    const stub = stubFetch([{ status: 200, body: proof }]);
+    const client = fixedClient(stub.fetch);
+
+    const out = await client.memoryForget({
+      mandate: { namespace: "ns", canRead: true, canWrite: true, canErase: true },
+      rootId: "mem-root",
+    });
+    expect(out).toEqual(proof);
+
+    const call = stub.calls[0];
+    expect(call?.url).toBe("https://gl.example/memory/forget");
+    expect(call?.init?.method).toBe("POST");
+    // The memory body is sent verbatim (camelCase wire) — no snake_case mapping.
+    expect(JSON.parse(String(call?.init?.body))).toEqual({
+      mandate: { namespace: "ns", canRead: true, canWrite: true, canErase: true },
+      rootId: "mem-root",
+    });
+    const headers = new Headers(call?.init?.headers);
+    // Operator authority, not the agent bearer token.
+    expect(headers.get("gl-operator")).not.toBeNull();
+    expect(headers.get("authorization")).toBeNull();
+  });
+
+  test("memoryForget signs over the memory:forget operation, distinct from refund", async () => {
+    // A credential minted for memory:forget must not match one minted for refund on the same
+    // body/ts/nonce — the operation is bound into the signing input.
+    const body = JSON.stringify({
+      mandate: { namespace: "ns", canRead: true, canWrite: true, canErase: true },
+      rootId: "mem-root",
+    });
+    const forgetHeader = await signOperatorRequest({
+      signer: signerRef,
+      operation: "memory:forget",
+      method: "POST",
+      url: "https://gl.example/memory/forget",
+      body,
+      ts: TS_SECONDS,
+      nonce: NONCE,
+    });
+    const refundHeader = await signOperatorRequest({
+      signer: signerRef,
+      operation: "refund",
+      method: "POST",
+      url: "https://gl.example/memory/forget",
+      body,
+      ts: TS_SECONDS,
+      nonce: NONCE,
+    });
+    expect(forgetHeader).not.toBe(refundHeader);
+  });
+
   test("a 202 approval.pending surfaces as a typed error, not a Receipt", async () => {
     const stub = stubFetch([
       {
