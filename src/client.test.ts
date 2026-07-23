@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createClient } from "./client.ts";
+import { ApprovalPendingError, PendingSettlementError } from "./internal/errors.ts";
 import { makeIntent, stubFetch, stubSigner } from "./testing/testkit.ts";
 
 describe("createClient / pay", () => {
@@ -55,6 +56,66 @@ describe("createClient / pay", () => {
     await client.pay(makeIntent({ idempotencyKey: "caller-key" }));
     const sent = JSON.parse(net.calls[0]!.init!.body as string);
     expect(sent.idempotency_key).toBe("caller-key");
+  });
+
+  test("a 202 clearing.pending decodes as a typed PendingSettlementError, not a Receipt", async () => {
+    const net = stubFetch([
+      {
+        status: 202,
+        body: {
+          type: "clearing.pending",
+          title: "The bound spend is held pending admissible delivery evidence.",
+          status: 202,
+          obligation_id: "obl-7",
+          state: "pending",
+          awaiting: "att",
+          achieved_class: "wit",
+        },
+      },
+    ]);
+    const client = createClient({
+      baseUrl: "https://gl.example/",
+      signer: stubSigner(),
+      fetch: net.fetch,
+    });
+
+    const err = await client.pay(makeIntent()).catch((e) => e);
+    expect(err).toBeInstanceOf(PendingSettlementError);
+    expect(err.type).toBe("clearing.pending");
+    expect(err.status).toBe(202);
+    // The typed variant decodes the camelCased problem into a PendingSettlement.
+    const settlement = (err as PendingSettlementError).settlement;
+    expect(settlement).toEqual({
+      type: "clearing.pending",
+      title: "The bound spend is held pending admissible delivery evidence.",
+      obligationId: "obl-7",
+      state: "pending",
+      awaiting: "att",
+      achievedClass: "wit",
+    });
+  });
+
+  test("a 202 approval.pending confirm surfaces as a typed error, not a Receipt", async () => {
+    const net = stubFetch([
+      {
+        status: 202,
+        body: {
+          type: "approval.pending",
+          title: "The intent is parked pending operator approval.",
+          status: 202,
+        },
+      },
+    ]);
+    const client = createClient({
+      baseUrl: "https://gl.example/",
+      signer: stubSigner(),
+      fetch: net.fetch,
+    });
+
+    const err = await client.pay(makeIntent()).catch((e) => e);
+    expect(err).toBeInstanceOf(ApprovalPendingError);
+    expect(err.type).toBe("approval.pending");
+    expect(err.status).toBe(202);
   });
 
   test("resolve decodes a snake_case Counterparty", async () => {

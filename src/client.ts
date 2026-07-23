@@ -91,6 +91,13 @@ class GlClient implements GeneralLiquidity {
     );
   }
 
+  /**
+   * Submit a signed Intent. On `allow` (200) the gate settles and returns a `Receipt`. A 202
+   * is accepted-but-not-settled and surfaces as a typed error, never a `Receipt`: `confirm`
+   * throws `ApprovalPendingError` (needs operator approval), and — on a stack that wired the
+   * optional PENDING clearing band — a HELD bound spend throws `PendingSettlementError`
+   * (`clearing.pending`, carrying the typed `.settlement`). `deny` throws `DeniedError`.
+   */
   pay(intent: Intent): Promise<Receipt> {
     return this.traced("pay", async (span) => {
       // Auto-generate the idempotency key when the caller left it blank — never let the
@@ -99,7 +106,14 @@ class GlClient implements GeneralLiquidity {
       span.setAttribute("gl.idempotency_key", idempotencyKey);
       const keyed: Intent = { ...intent, idempotencyKey };
       const signed = await signIntent(keyed, this.signer);
-      return this.http.post<Receipt>("pay", signed, { "idempotency-key": idempotencyKey }, span);
+      // Money settles on 200 only; a 202 (approval.pending / clearing.pending) is a typed error.
+      return this.http.post<Receipt>(
+        "pay",
+        signed,
+        { "idempotency-key": idempotencyKey },
+        span,
+        true,
+      );
     });
   }
 

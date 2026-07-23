@@ -65,6 +65,7 @@ export class Http {
     body: unknown,
     headers: Record<string, string> = {},
     span?: Span,
+    strict200 = false,
   ): Promise<T> {
     const url = new URL(path, this.cfg.baseUrl).toString();
     const payload = JSON.stringify(toWire(body));
@@ -74,6 +75,8 @@ export class Http {
       { "content-type": "application/json", ...headers },
       payload,
       span,
+      false,
+      strict200,
     );
   }
 
@@ -128,6 +131,7 @@ export class Http {
     payload: string | undefined,
     span?: Span,
     raw = false,
+    strict200 = false,
   ): Promise<T> {
     const sleep = this.cfg.sleep ?? defaultSleep;
     const rand = this.cfg.random ?? Math.random;
@@ -168,9 +172,10 @@ export class Http {
 
       span?.setAttribute("gl.http.status", res.status);
 
-      // Raw memory calls succeed on 200 alone: a 202 (memory.pending) is a parked write and
-      // routes through the typed-error path so the caller cannot mistake it for a record.
-      if (raw ? res.status === 200 : res.ok) {
+      // Raw memory calls (and the money path via strict200) succeed on 200 alone: a 202 is a
+      // non-settled outcome (memory.pending / approval.pending / clearing.pending) that routes
+      // through the typed-error path so the caller cannot mistake it for a record or a Receipt.
+      if (raw || strict200 ? res.status === 200 : res.ok) {
         if (!raw && res.status === 204) return undefined as T;
         const body = (await res.json()) as unknown;
         return (raw ? body : fromWire(body)) as T;

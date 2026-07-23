@@ -2,6 +2,8 @@
 // field (RFC 7807), not on prose. `type` may be a full URI or a bare slug; we key on
 // the trailing path segment so both wire shapes resolve to the same class.
 
+import type { EvidenceClass, PendingSettlement } from "../types.ts";
+
 /** RFC 7807 problem+json body. */
 export interface Problem {
   type?: string;
@@ -60,12 +62,35 @@ export class AuthError extends GlError {}
 export class ServerError extends GlError {}
 /** The gate parked a confirm-tier intent; it needs an operator approval before settling. */
 export class ApprovalPendingError extends GlError {}
+/**
+ * The optional PENDING clearing band HELD a bound spend: gated and authorized, but the
+ * obligation's admissibility floor is not yet met and its deadline has not passed. Retry once
+ * admissible evidence exists (the hold auto-releases to a `Receipt`); the hold refuses once the
+ * deadline passes. Mirrors `ApprovalPendingError`, the other 202-tier `pay` outcome.
+ */
+export class PendingSettlementError extends GlError {
+  /** The `clearing.pending` hold, typed. Decoded from the problem body's camelCase fields. */
+  get settlement(): PendingSettlement | undefined {
+    const p = this.problem;
+    if (!p) return undefined;
+    return {
+      type: "clearing.pending",
+      title: String(p.title ?? ""),
+      obligationId: String(p.obligationId ?? ""),
+      state: "pending",
+      awaiting: p.awaiting as EvidenceClass,
+      achievedClass: p.achievedClass as EvidenceClass | undefined,
+    };
+  }
+}
 
 const BY_TYPE: Record<string, new (a: ConstructorParameters<typeof GlError>[0]) => GlError> = {
   "rate-limited": RateLimitError,
   "rate-limit": RateLimitError,
   "approval.pending": ApprovalPendingError,
   "approval-pending": ApprovalPendingError,
+  "clearing.pending": PendingSettlementError,
+  "clearing-pending": PendingSettlementError,
   "insufficient-funds": InsufficientFundsError,
   "mandate-exceeded": MandateExceededError,
   denied: DeniedError,

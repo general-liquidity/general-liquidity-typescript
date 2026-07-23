@@ -111,6 +111,32 @@ export interface Receipt {
   enforcement: string;
 }
 
+/**
+ * The admissibility ladder for delivery evidence, weakest to strongest. `wit` and `rec`
+ * are deliberately incomparable; `pote` (Proof-of-Task-Execution) is the strongest.
+ */
+export type EvidenceClass = "self" | "sign" | "wit" | "rec" | "att" | "proof" | "pote";
+
+/**
+ * An RFC 7807 problem (type `clearing.pending`) a `pay` returns when an optional PENDING
+ * clearing band holds a bound spend: it was gated and authorized, but the obligation's
+ * admissibility floor is not yet met and the deadline has not passed, so the value is held
+ * rather than settled or refused. Retry once admissible evidence exists (the hold
+ * auto-releases to a `Receipt`); the hold refuses once the deadline passes. Only present on
+ * a stack that wired the clearing band's PENDING state.
+ */
+export interface PendingSettlement {
+  type: "clearing.pending";
+  title: string;
+  /** The obligation the spend is conditional on. */
+  obligationId: string;
+  state: "pending";
+  /** The admissibility class still awaited before the spend can settle. */
+  awaiting: EvidenceClass;
+  /** The strongest class the admitted evidence has reached so far. */
+  achievedClass?: EvidenceClass;
+}
+
 /** The ed25519 signature over a canonicalized disclosure document. */
 export interface DisclosureSignature {
   algorithm: "ed25519";
