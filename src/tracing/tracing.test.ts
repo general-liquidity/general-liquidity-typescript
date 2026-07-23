@@ -106,7 +106,10 @@ describe("tracing on the surface ops", () => {
     });
 
     await client.resolve("did:web:acme.example");
-    await client.verify({ agentId: "a", document: {}, signature: "s" });
+    await client.verify({
+      document: {},
+      signature: { algorithm: "ed25519", publicKey: "a", value: "s" },
+    });
     await client.disclose();
 
     expect(tracer.spans.map((s) => s.name)).toEqual(["gl.resolve", "gl.verify", "gl.disclose"]);

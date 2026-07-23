@@ -58,10 +58,14 @@ export class ValidationError extends GlError {}
 export class IdempotencyConflictError extends GlError {}
 export class AuthError extends GlError {}
 export class ServerError extends GlError {}
+/** The gate parked a confirm-tier intent; it needs an operator approval before settling. */
+export class ApprovalPendingError extends GlError {}
 
 const BY_TYPE: Record<string, new (a: ConstructorParameters<typeof GlError>[0]) => GlError> = {
   "rate-limited": RateLimitError,
   "rate-limit": RateLimitError,
+  "approval.pending": ApprovalPendingError,
+  "approval-pending": ApprovalPendingError,
   "insufficient-funds": InsufficientFundsError,
   "mandate-exceeded": MandateExceededError,
   denied: DeniedError,

@@ -101,8 +101,9 @@ class GlClient implements GeneralLiquidity {
       // Ask the server for GL's disclosure document, then sign it locally so the
       // signature is bound to the operator's key, not the server's.
       const document = await this.http.post<Record<string, unknown>>("disclose", {}, {}, span);
-      const signature = await this.signer.sign(new TextEncoder().encode(JSON.stringify(document)));
-      return { agentId: this.signer.agentId ?? "", document, signature };
+      const value = await this.signer.sign(new TextEncoder().encode(JSON.stringify(document)));
+      const publicKey = this.signer.agentId ?? "";
+      return { document, signature: { algorithm: "ed25519", publicKey, value } };
     });
   }
 }

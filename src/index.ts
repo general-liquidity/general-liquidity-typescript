@@ -7,6 +7,7 @@ export { createClient } from "./client.ts";
 export { canonicalBytes, fromWire, toWire } from "./internal/canonical.ts";
 export type { Problem } from "./internal/errors.ts";
 export {
+  ApprovalPendingError,
   AuthError,
   DeniedError,
   GlError,
@@ -33,7 +34,15 @@ export type {
   Counterparty,
   Decision,
   Disclosure,
+  DisclosureSignature,
   GeneralLiquidity,
   Intent,
+  KeyRotationStatement,
+  OperatorApprove,
+  OperatorKillSwitch,
+  OperatorRationale,
+  OperatorRefund,
+  OperatorStateView,
   Receipt,
+  RefundResult,
 } from "./types.ts";

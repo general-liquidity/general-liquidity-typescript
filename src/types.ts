@@ -109,12 +109,49 @@ export interface Receipt {
   enforcement: string;
 }
 
-/** A signed self-description (identity + provenance). GL's disclosure format. */
-export interface Disclosure {
-  /** Equals the ed25519 public key. */
-  agentId: string;
-  document: Record<string, unknown>;
+/** The ed25519 signature over a canonicalized disclosure document. */
+export interface DisclosureSignature {
+  algorithm: "ed25519";
+  /**
+   * Signer's public key (hex). Equals `document.agentId` in the common case; under
+   * rotation it is the current key at the tip of `rotationChain`.
+   */
+  publicKey: string;
+  /** Signature over the canonicalized document (hex). */
+  value: string;
+}
+
+/**
+ * One signed hop of a key-rotation chain: the old key signs the move to the new key,
+ * so an identity survives a key change (an agentId IS its public key).
+ */
+export interface KeyRotationStatement {
+  type: "rotation";
+  /** agentId (public key hex) being rotated away from. */
+  from: string;
+  /** agentId (public key hex) being rotated to. */
+  to: string;
+  /** ISO-8601 instant. */
+  rotatedAt: string;
+  /** Old key's signature over {type, from, to, rotatedAt} (hex). */
   signature: string;
+}
+
+/**
+ * A signed self-description (identity + provenance). GL's disclosure format. The wire
+ * shape equals the signed envelope both sides exchange, so a rotated signing key can
+ * disclose while the stable agent id (`document.agentId`) is preserved. No agentId at
+ * the top level: it lives in the signed document.
+ */
+export interface Disclosure {
+  /** The signed disclosure document (an AgentDisclosure). Its `agentId` roots the signature. */
+  document: Record<string, unknown>;
+  signature: DisclosureSignature;
+  /**
+   * Present only when the signing key has rotated away from `document.agentId`; links the
+   * stable id to `signature.publicKey`. Absent in the common no-rotation case.
+   */
+  rotationChain?: KeyRotationStatement[];
 }
 
 /** A normalized, resolved counterparty identity. */
@@ -124,6 +161,64 @@ export interface Counterparty {
   capabilities: string[];
   rails: RailId[];
   trust?: Record<string, unknown>;
+}
+
+// Operator surface (the `/operator/*` routes). A SEPARATE authorization domain from the
+// agent bearer token: these are gated only by the detached `GL-Operator` ed25519
+// credential, which the hand-written client does not mint. The wire types are mirrored
+// here so callers can construct and decode operator payloads; the transport for them is
+// operator-tooling, not this agent client.
+
+/** Resume material for a parked (confirm-tier) intent, plus the operator's acknowledgement. */
+export interface OperatorApprove {
+  /** The parked intent id. */
+  intentId: string;
+  /** The opaque challenge that binds this approval to that intent. Not a bearer credential. */
+  challenge: string;
+  /** The mandate the gate matched when it parked the intent. */
+  mandateId: string;
+  /** Why the operator is releasing it. Recorded in the signed audit chain (min 10 chars). */
+  rationale: string;
+  /** Explicit challenge-response acknowledgement. Never inferred for a high-risk release. */
+  acknowledged: boolean;
+}
+
+/** Request to reverse a settled payment on a reversible rail. */
+export interface OperatorRefund {
+  intentId: string;
+  /** Minor units to refund. Omitted, the full outstanding amount. */
+  amountMinor?: number;
+  /** min 10 chars. */
+  rationale: string;
+}
+
+/** Engage or disengage the kill switch. Signed separately per direction. */
+export interface OperatorKillSwitch {
+  /** True freezes the settle path; false releases it. */
+  engaged: boolean;
+  /** min 10 chars. */
+  rationale: string;
+}
+
+/** A bare operator rationale, e.g. to reset a tripped circuit breaker. */
+export interface OperatorRationale {
+  /** min 10 chars. */
+  rationale: string;
+}
+
+/** The result of an operator refund. */
+export interface RefundResult {
+  ok: boolean;
+  /** Cumulative minor units refunded against the intent. */
+  refundedMinor: number;
+  /** Present on refusal, e.g. an irreversible settlement. */
+  reason?: string;
+}
+
+/** The live halt state, returned so an operator sees the effect of what they just did. */
+export interface OperatorStateView {
+  killSwitchEngaged: boolean;
+  circuitBreakerOpen: boolean;
 }
 
 /**
