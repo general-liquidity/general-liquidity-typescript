@@ -2,13 +2,19 @@ import { DEFAULT_RETRY, Http, type RetryPolicy } from "./internal/http.ts";
 import { type Signer, signIntent } from "./signer/signer.ts";
 import { noopTracer, type Span, type Tracer } from "./tracing/tracer.ts";
 import type {
+  AuditEvent,
   Counterparty,
   Decision,
   Disclosure,
   FetchLike,
   GeneralLiquidity,
   Intent,
+  Job,
+  Page,
+  PageQuery,
   Receipt,
+  UsageQuery,
+  UsageSummary,
 } from "./types.ts";
 
 export interface ClientConfig {
@@ -105,6 +111,38 @@ class GlClient implements GeneralLiquidity {
       const publicKey = this.signer.agentId ?? "";
       return { document, signature: { algorithm: "ed25519", publicKey, value } };
     });
+  }
+
+  getJob(id: string): Promise<Job> {
+    return this.traced("get_job", (span) =>
+      this.http.get<Job>(`intents/${encodeURIComponent(id)}`, {}, span),
+    );
+  }
+
+  getJobEvents(id: string, query: PageQuery = {}): Promise<Page<AuditEvent>> {
+    return this.traced("get_job_events", (span) =>
+      this.http.get<Page<AuditEvent>>(
+        `intents/${encodeURIComponent(id)}/events`,
+        { cursor: query.cursor, limit: query.limit },
+        span,
+      ),
+    );
+  }
+
+  getAudit(query: PageQuery = {}): Promise<Page<AuditEvent>> {
+    return this.traced("get_audit", (span) =>
+      this.http.get<Page<AuditEvent>>("audit", { cursor: query.cursor, limit: query.limit }, span),
+    );
+  }
+
+  getUsage(query: UsageQuery): Promise<UsageSummary> {
+    return this.traced("get_usage", (span) =>
+      this.http.get<UsageSummary>(
+        "usage",
+        { since: query.since, until: query.until, tags: query.tags },
+        span,
+      ),
+    );
   }
 }
 

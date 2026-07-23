@@ -36,6 +36,7 @@ export {
   type OperatorOperation,
   operatorBodyDigest,
   operatorSigningInput,
+  type WebhookOperatorOperation,
 } from "./operator/credential.ts";
 export type { OperatorClientConfig } from "./operator/client.ts";
 export { createOperatorClient, OperatorClient, signOperatorRequest } from "./operator/client.ts";
@@ -49,18 +50,31 @@ export type { AttributeValue, Span, SpanAttributes, Tracer } from "./tracing/tra
 export { noopTracer } from "./tracing/tracer.ts";
 // Re-export the surface types the SDK consumes, so callers need one import.
 export type {
+  AuditEvent,
   Counterparty,
+  CreateWebhookEndpoint,
   Decision,
   Disclosure,
   DisclosureSignature,
   GeneralLiquidity,
   Intent,
+  Job,
+  JobStatus,
   KeyRotationStatement,
   OperatorApprove,
   OperatorKillSwitch,
   OperatorRationale,
   OperatorRefund,
   OperatorStateView,
+  Page,
+  PageQuery,
   Receipt,
   RefundResult,
+  UpdateWebhookEndpoint,
+  UsageQuery,
+  UsageSummary,
+  WebhookEndpoint,
+  WebhookEndpointCreated,
+  WebhookEvent,
+  WebhookEventType,
 } from "./types.ts";

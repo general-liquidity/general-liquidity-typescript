@@ -66,10 +66,45 @@ export class Http {
     headers: Record<string, string> = {},
     span?: Span,
   ): Promise<T> {
-    const sleep = this.cfg.sleep ?? defaultSleep;
-    const rand = this.cfg.random ?? Math.random;
     const url = new URL(path, this.cfg.baseUrl).toString();
     const payload = JSON.stringify(toWire(body));
+    return this.execute<T>(
+      "POST",
+      url,
+      { "content-type": "application/json", ...headers },
+      payload,
+      span,
+    );
+  }
+
+  /**
+   * GET a read surface, decoding the snake_case response to camelCase. Query values are
+   * appended in order; arrays repeat the key (the spec's repeatable `tags`). Shares the
+   * same retry/backoff and typed-error path as POST.
+   */
+  async get<T>(
+    path: string,
+    query: Record<string, string | number | string[] | undefined> = {},
+    span?: Span,
+  ): Promise<T> {
+    const url = new URL(path, this.cfg.baseUrl);
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined) continue;
+      if (Array.isArray(value)) for (const item of value) url.searchParams.append(key, item);
+      else url.searchParams.set(key, String(value));
+    }
+    return this.execute<T>("GET", url.toString(), {}, undefined, span);
+  }
+
+  private async execute<T>(
+    method: string,
+    url: string,
+    headers: Record<string, string>,
+    payload: string | undefined,
+    span?: Span,
+  ): Promise<T> {
+    const sleep = this.cfg.sleep ?? defaultSleep;
+    const rand = this.cfg.random ?? Math.random;
 
     // One logical request = one span, so the traceparent is stable across retries; the
     // retry count is what distinguishes the attempts.
@@ -83,14 +118,13 @@ export class Http {
       let res: Response;
       try {
         res = await this.cfg.fetch(url, {
-          method: "POST",
+          method,
           headers: {
-            "content-type": "application/json",
             accept: "application/json",
             ...traced,
             ...headers,
           },
-          body: payload,
+          ...(payload !== undefined ? { body: payload } : {}),
         });
       } catch (cause) {
         // Network failure — retryable transport error.

@@ -226,3 +226,98 @@ describe("OperatorClient", () => {
     expect(stub.calls[0]?.url).toBe("https://gl.example/operator/circuit-breaker/reset");
   });
 });
+
+describe("OperatorClient webhook CRUD", () => {
+  const CREATED = {
+    id: "wh-1",
+    url: "https://sink.example/hook",
+    events: ["payment.settled"],
+    active: true,
+    secret: "whsec_abc123",
+  };
+
+  test("createWebhookEndpoint POSTs the endpoint under a webhook:post credential", async () => {
+    const stub = stubFetch([{ status: 201, body: CREATED }]);
+    const created = await fixedClient(stub.fetch).createWebhookEndpoint({
+      url: "https://sink.example/hook",
+      events: ["payment.settled"],
+    });
+    expect(created.secret).toBe("whsec_abc123");
+    const call = stub.calls[0];
+    expect(call?.url).toBe("https://gl.example/webhooks/endpoints");
+    expect(call?.init?.method).toBe("POST");
+    expect(JSON.parse(String(call?.init?.body))).toEqual({
+      url: "https://sink.example/hook",
+      events: ["payment.settled"],
+    });
+    // Operator credential is present; the agent bearer token is never set.
+    const headers = new Headers(call?.init?.headers);
+    expect(headers.get("gl-operator")).toBeTruthy();
+    expect(headers.get("authorization")).toBeNull();
+
+    // The signature binds the webhook:post operation over the exact sent body.
+    const expected = await signOperatorRequest({
+      signer: signerRef,
+      operation: "webhook:post",
+      method: "POST",
+      url: "https://gl.example/webhooks/endpoints",
+      body: String(call?.init?.body),
+      ts: TS_SECONDS,
+      nonce: NONCE,
+    });
+    expect(headers.get("gl-operator")).toBe(expected);
+  });
+
+  test("listWebhookEndpoints GETs with no body, digesting the empty string", async () => {
+    const stub = stubFetch([{ status: 200, body: { data: [CREATED] } }]);
+    const out = await fixedClient(stub.fetch).listWebhookEndpoints();
+    expect(out.data[0]?.id).toBe("wh-1");
+    const call = stub.calls[0];
+    expect(call?.init?.method).toBe("GET");
+    expect(call?.init?.body).toBeUndefined();
+    const expected = await signOperatorRequest({
+      signer: signerRef,
+      operation: "webhook:get",
+      method: "GET",
+      url: "https://gl.example/webhooks/endpoints",
+      body: "",
+      ts: TS_SECONDS,
+      nonce: NONCE,
+    });
+    expect(new Headers(call?.init?.headers).get("gl-operator")).toBe(expected);
+  });
+
+  test("updateWebhookEndpoint PATCHes only the named fields", async () => {
+    const stub = stubFetch([{ status: 200, body: { ...CREATED, active: false } }]);
+    const out = await fixedClient(stub.fetch).updateWebhookEndpoint("wh-1", { active: false });
+    expect(out.active).toBe(false);
+    const call = stub.calls[0];
+    expect(call?.url).toBe("https://gl.example/webhooks/endpoints/wh-1");
+    expect(call?.init?.method).toBe("PATCH");
+    expect(JSON.parse(String(call?.init?.body))).toEqual({ active: false });
+  });
+
+  test("deleteWebhookEndpoint returns on a 204 with no body", async () => {
+    const stub = stubFetch([{ status: 204 }]);
+    await expect(fixedClient(stub.fetch).deleteWebhookEndpoint("wh-1")).resolves.toBeUndefined();
+    const call = stub.calls[0];
+    expect(call?.init?.method).toBe("DELETE");
+    expect(call?.url).toBe("https://gl.example/webhooks/endpoints/wh-1");
+  });
+
+  test("a 401 on the webhook surface throws with the status preserved", async () => {
+    const stub = stubFetch([
+      {
+        status: 401,
+        body: {
+          type: "https://docs.generalliquidity.com/problems/operator.unauthorized",
+          title: "Operator authority required",
+          status: 401,
+        },
+      },
+    ]);
+    await expect(fixedClient(stub.fetch).getWebhookEndpoint("wh-1")).rejects.toMatchObject({
+      status: 401,
+    });
+  });
+});

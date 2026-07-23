@@ -25,6 +25,14 @@ export type OperatorOperation =
   | "kill_switch.disengage"
   | "circuit_breaker.reset";
 
+/**
+ * The webhook-scoped operator operations, one per HTTP method on `/webhooks/endpoints`.
+ * Bound into the SAME operator signing input as the settle-path verbs (the server derives
+ * it as `webhook:${method.toLowerCase()}`), so a credential minted for `webhook:*` cannot
+ * be replayed onto approve/refund and vice versa.
+ */
+export type WebhookOperatorOperation = `webhook:${"get" | "post" | "patch" | "delete"}`;
+
 /** base64url SHA-256 of the raw request body bytes. An empty body hashes as empty. */
 export async function operatorBodyDigest(body: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body));

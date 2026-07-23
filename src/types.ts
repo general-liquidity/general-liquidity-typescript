@@ -5,6 +5,8 @@
 // the noun/value types the client signs, submits, and decodes, plus the GeneralLiquidity
 // surface it implements. The SDK vendors these so it carries zero workspace dependencies.
 
+import type { Problem } from "./internal/errors.ts";
+
 /** An injected fetch. Defaults to the global `fetch` when the caller supplies none. */
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -163,6 +165,94 @@ export interface Counterparty {
   trust?: Record<string, unknown>;
 }
 
+/** A single signed, hash-linked entry in the audit trail. */
+export interface AuditEvent {
+  /** Monotonic wire event type, e.g. "intent.gated" | "intent.settled". */
+  type: string;
+  /** ISO-8601 instant. */
+  at: string;
+  intentKey?: string;
+  /** HMAC hash of the previous entry — the hash-link. */
+  prev?: string;
+  /** Opaque passthrough payload. */
+  payload: Record<string, unknown>;
+}
+
+/**
+ * A cursor-paginated page envelope. `data` holds the items; `nextCursor` names the last
+ * item so the next call resumes strictly after it (no overlap, no gap).
+ */
+export interface Page<T> {
+  data: T[];
+  /** True when items remain after this page. */
+  hasMore: boolean;
+  /** Token for the next page, or null when `hasMore` is false. */
+  nextCursor: string | null;
+}
+
+/** Cursor-pagination query params. `limit` is clamped to [1, 100] server-side. */
+export interface PageQuery {
+  cursor?: string;
+  limit?: number;
+}
+
+/**
+ * Terminal-state enum for a job, grounded one-for-one in the store states. `pending` is
+ * the only non-terminal state (parked, awaiting operator approval).
+ */
+export type JobStatus = "pending" | "settled" | "denied" | "failed";
+
+/** A read projection over an intent's confirm-park-approve lifecycle. */
+export interface Job {
+  /** The idempotency/intent key — the stable resource id. */
+  id: string;
+  status: JobStatus;
+  /** ISO-8601 instant of the intent's first audit entry, falling back to its settle time. */
+  createdAt: string;
+  /** Set ONLY for terminal states (settled/denied/failed). */
+  terminalAt?: string;
+  outcome: Outcome;
+  /** Present on a settled job. */
+  receipt?: Receipt;
+  /** The RFC 9457 problem on a denied/failed job. */
+  problem?: Problem;
+  /** Resume material, present only on a pending job. */
+  pending?: {
+    mandateId?: string;
+    /** Opaque challenge an operator approval binds to. */
+    challenge?: string;
+  };
+  links: {
+    self: string;
+    events: string;
+  };
+}
+
+/** Metered call counts for one principal over a half-open window. Counts only. */
+export interface UsageSummary {
+  keyId: string;
+  /** ISO-8601 inclusive lower bound. */
+  since: string;
+  /** ISO-8601 exclusive upper bound. */
+  until: string;
+  /** Total calls counted in the window (after any tag filter). */
+  total: number;
+  /** Count keyed by operation, e.g. { pay: 3, resolve: 1 }. */
+  byOperation: Record<string, number>;
+  /** Count keyed by outcome, e.g. { allow: 2, deny: 1 }. */
+  byOutcome: Record<string, number>;
+}
+
+/** Usage query: a half-open window `[since, until)` plus an optional AND-tag filter. */
+export interface UsageQuery {
+  /** ISO-8601 inclusive lower bound. */
+  since: string;
+  /** ISO-8601 exclusive upper bound. */
+  until: string;
+  /** Count only calls carrying EVERY listed tag (AND semantics). */
+  tags?: string[];
+}
+
 // Operator surface (the `/operator/*` routes). A SEPARATE authorization domain from the
 // agent bearer token: these are gated only by the detached `GL-Operator` ed25519
 // credential, which the hand-written client does not mint. The wire types are mirrored
@@ -221,6 +311,62 @@ export interface OperatorStateView {
   circuitBreakerOpen: boolean;
 }
 
+// Webhook subscription management. OPERATOR authority: an endpoint that receives
+// settlement/audit events is gated by the `GL-Operator` credential, not the agent bearer
+// token, so this CRUD rides the OperatorClient. Events are derived from the signed audit
+// chain and signed with a per-endpoint `whsec_` secret (the `GL-Signature` header).
+
+/** The outbound event types a subscription filters on. */
+export type WebhookEventType =
+  | "payment.settled"
+  | "intent.denied"
+  | "approval.pending"
+  | "audit.appended";
+
+/** A registered delivery endpoint as the reads expose it (secret redacted). */
+export interface WebhookEndpoint {
+  id: string;
+  url: string;
+  events: WebhookEventType[];
+  active: boolean;
+}
+
+/** The created endpoint, including its one-time `whsec_` secret (returned ONCE, at create). */
+export interface WebhookEndpointCreated extends WebhookEndpoint {
+  /** The `whsec_` HMAC signing secret. Shown ONCE, at create, never again. */
+  secret: string;
+}
+
+/** Registration input for a new webhook endpoint. */
+export interface CreateWebhookEndpoint {
+  url: string;
+  events: WebhookEventType[];
+  /** Defaults to true server-side. */
+  active?: boolean;
+}
+
+/** Partial update for a webhook endpoint. Only the named fields change. */
+export interface UpdateWebhookEndpoint {
+  url?: string;
+  events?: WebhookEventType[];
+  active?: boolean;
+}
+
+/**
+ * One delivered webhook event, derived from a signed audit entry. `id` is deterministic
+ * in the source entry (dedup key across at-least-once retries), signed with the endpoint's
+ * secret via the `GL-Signature` header.
+ */
+export interface WebhookEvent {
+  /** Deterministic event id, `evt_<audit_hash>`. */
+  id: string;
+  type: WebhookEventType;
+  /** ISO-8601 instant. */
+  createdAt: string;
+  /** Source entry payload plus chain coordinates (`audit_seq`, `audit_hash`, `audit_type`). */
+  data: Record<string, unknown>;
+}
+
 /**
  * The canonical General Liquidity surface. Small, task-shaped, self-describing —
  * every method is also an MCP tool name. The agent submits signed intents; the
@@ -238,4 +384,16 @@ export interface GeneralLiquidity {
 
   /** Produce GL's own signed disclosure: what this agent is and is authorized to do. */
   disclose(): Promise<Disclosure>;
+
+  /** Read the async job resource for one intent (`GET /intents/{id}`). */
+  getJob(id: string): Promise<Job>;
+
+  /** List one intent's signed audit events, cursor-paginated (`GET /intents/{id}/events`). */
+  getJobEvents(id: string, query?: PageQuery): Promise<Page<AuditEvent>>;
+
+  /** Read the signed, hash-linked audit trail, cursor-paginated (`GET /audit`). */
+  getAudit(query?: PageQuery): Promise<Page<AuditEvent>>;
+
+  /** Read metered call counts for the authenticated principal (`GET /usage`). */
+  getUsage(query: UsageQuery): Promise<UsageSummary>;
 }

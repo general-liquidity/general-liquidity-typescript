@@ -111,6 +111,25 @@ The noun and value types live in `src/types.ts`. They mirror the General Liquidi
 OpenAPI spec and are kept in sync via that spec (general-liquidity-openapi). TypeScript is
 camelCase; the wire is snake_case, converted at the HTTP boundary.
 
+## Read surface and webhooks
+
+Beyond the four core verbs, the agent client exposes read projections over the signed
+audit trail: `getJob(id)` reads the async job resource for one intent (`GET /intents/{id}`),
+`getJobEvents(id, { cursor, limit })` and `getAudit({ cursor, limit })` page the signed
+events, and `getUsage({ since, until, tags })` reads metered call counts. All decode the
+snake_case wire to camelCase.
+
+Webhook endpoint management (`POST/GET/PATCH/DELETE /webhooks/endpoints`) is OPERATOR
+authority, so it rides the `OperatorClient`, not the agent key: `createWebhookEndpoint`,
+`listWebhookEndpoints`, `getWebhookEndpoint`, `updateWebhookEndpoint`,
+`deleteWebhookEndpoint`. Create returns the `whsec_` secret once. Each call is signed with
+the same `GL-Operator` scheme as approve/refund, bound to a distinct `webhook:<method>`
+operation so a webhook credential cannot be replayed onto the settle path.
+
+The SSE audit feed (`GET /audit/stream`, `text/event-stream`, `Last-Event-ID` resume) is
+available on the server but has no SDK wrapper yet: this client has no streaming transport,
+so consume it with a standard `EventSource` / fetch-stream reader against the same base URL.
+
 ## Development
 
 ```sh

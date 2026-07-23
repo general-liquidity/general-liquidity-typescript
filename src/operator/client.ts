@@ -13,12 +13,16 @@
 
 import { errorFromProblem, type Problem } from "../internal/errors.ts";
 import type {
+  CreateWebhookEndpoint,
   FetchLike,
   OperatorApprove,
   OperatorRefund,
   OperatorStateView,
   Receipt,
   RefundResult,
+  UpdateWebhookEndpoint,
+  WebhookEndpoint,
+  WebhookEndpointCreated,
 } from "../types.ts";
 import {
   formatOperatorCredential,
@@ -26,6 +30,7 @@ import {
   type OperatorOperation,
   operatorBodyDigest,
   operatorSigningInput,
+  type WebhookOperatorOperation,
 } from "./credential.ts";
 import type { OperatorSigner } from "./signer.ts";
 
@@ -49,7 +54,7 @@ export interface OperatorClientConfig {
  */
 export async function signOperatorRequest(params: {
   signer: OperatorSigner;
-  operation: OperatorOperation;
+  operation: OperatorOperation | WebhookOperatorOperation;
   method: string;
   url: string;
   body: string;
@@ -143,6 +148,96 @@ export class OperatorClient {
       "/operator/circuit-breaker/reset",
       { rationale },
     );
+  }
+
+  /**
+   * Register a webhook endpoint. OPERATOR authority — an endpoint that receives
+   * settlement/audit events is gated by the `GL-Operator` credential, not the agent key.
+   * The `whsec_` signing secret is returned ONCE, on this call; the reads never re-expose it.
+   */
+  createWebhookEndpoint(req: CreateWebhookEndpoint): Promise<WebhookEndpointCreated> {
+    return this.webhookRequest<WebhookEndpointCreated>("POST", "/webhooks/endpoints", {
+      url: req.url,
+      events: req.events,
+      ...(req.active !== undefined ? { active: req.active } : {}),
+    });
+  }
+
+  /** List the registered webhook endpoints (secrets redacted). */
+  listWebhookEndpoints(): Promise<{ data: WebhookEndpoint[] }> {
+    return this.webhookRequest<{ data: WebhookEndpoint[] }>("GET", "/webhooks/endpoints");
+  }
+
+  /** Read one webhook endpoint (secret redacted). */
+  getWebhookEndpoint(id: string): Promise<WebhookEndpoint> {
+    return this.webhookRequest<WebhookEndpoint>(
+      "GET",
+      `/webhooks/endpoints/${encodeURIComponent(id)}`,
+    );
+  }
+
+  /** Update one webhook endpoint. Only the named fields change. */
+  updateWebhookEndpoint(id: string, req: UpdateWebhookEndpoint): Promise<WebhookEndpoint> {
+    return this.webhookRequest<WebhookEndpoint>(
+      "PATCH",
+      `/webhooks/endpoints/${encodeURIComponent(id)}`,
+      { ...req },
+    );
+  }
+
+  /** Delete one webhook endpoint. */
+  deleteWebhookEndpoint(id: string): Promise<void> {
+    return this.webhookRequest<void>("DELETE", `/webhooks/endpoints/${encodeURIComponent(id)}`);
+  }
+
+  /**
+   * One signed webhook-CRUD request. Same operator credential scheme as {@link call}, but
+   * the verb varies (GET/POST/PATCH/DELETE) and the operation is the webhook-scoped
+   * `webhook:<method>` the server signs over. GET/DELETE send no body — the digest is over
+   * the empty string, matching the server. Any 2xx is success (201 create, 200 read/update,
+   * 204 delete); everything else is a typed GL error.
+   */
+  private async webhookRequest<T>(
+    method: "GET" | "POST" | "PATCH" | "DELETE",
+    path: string,
+    bodyObj?: Record<string, unknown>,
+  ): Promise<T> {
+    const url = new URL(path, this.baseUrl).toString();
+    // Serialize ONCE. The digest, the signature, and the wire body are all this string;
+    // a bodyless GET/DELETE digests the empty string, as the server does.
+    const body = bodyObj === undefined ? "" : JSON.stringify(bodyObj);
+    const ts = Math.floor(this.now() / 1000);
+    const nonce = this.newNonce();
+
+    const credential = await signOperatorRequest({
+      signer: this.signer,
+      operation: `webhook:${method.toLowerCase()}` as WebhookOperatorOperation,
+      method,
+      url,
+      body,
+      ts,
+      nonce,
+    });
+
+    const headers: Record<string, string> = {
+      accept: "application/json",
+      [OPERATOR_HEADER]: credential,
+    };
+    if (bodyObj !== undefined) headers["content-type"] = "application/json";
+
+    const res = await this.fetchImpl(url, {
+      method,
+      headers,
+      ...(bodyObj !== undefined ? { body } : {}),
+    });
+
+    if (res.status >= 200 && res.status < 300) {
+      if (res.status === 204) return undefined as T;
+      return (await res.json()) as T;
+    }
+
+    const problem = await readProblem(res);
+    throw errorFromProblem(problem, res.status);
   }
 
   private async call<T>(
