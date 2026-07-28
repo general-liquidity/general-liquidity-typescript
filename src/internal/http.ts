@@ -1,6 +1,6 @@
 import type { Span } from "../tracing/tracer.ts";
 import type { FetchLike } from "../types.ts";
-import { fromWire, toWire } from "./canonical.ts";
+import { fromWire } from "./canonical.ts";
 import { errorFromProblem, type GlError, type Problem, ServerError } from "./errors.ts";
 
 export interface RetryPolicy {
@@ -44,7 +44,9 @@ function backoffMs(attempt: number, policy: RetryPolicy, rand: () => number): nu
 async function readProblem(res: Response): Promise<Problem> {
   try {
     const body = (await res.json()) as unknown;
-    if (body && typeof body === "object") return fromWire(body) as Problem;
+    // A problem body is camelCase as served (`retryAfter`, `obligationId`, `achievedClass`),
+    // so it is read verbatim.
+    if (body && typeof body === "object") return body as Problem;
   } catch {
     // fall through to a synthetic problem
   }
@@ -55,7 +57,16 @@ export class Http {
   constructor(private readonly cfg: HttpConfig) {}
 
   /**
-   * POST a camelCase body as snake_case JSON; return a camelCase-decoded response.
+   * POST a JSON body and return the decoded response.
+   *
+   * Field names cross this boundary UNTRANSLATED on the way out. The wire is camelCase,
+   * the same spelling these types carry, so there is nothing to convert: a casing pass
+   * here would rename every field out from under the server, which validates the camelCase
+   * spelling and refuses the request as missing a field that was supplied, and it would
+   * break every signature by making the signed preimage differ from the body sent.
+   *
+   * On the way back, the legacy snake_case envelope keys are renamed (see `fromWire`).
+   *
    * When a `span` is supplied the request carries its W3C `traceparent` so the server
    * joins the same trace, and the number of retries spent lands on the span as
    * `gl.retries` (BUILD-PLAN §5).
@@ -68,7 +79,7 @@ export class Http {
     strict200 = false,
   ): Promise<T> {
     const url = new URL(path, this.cfg.baseUrl).toString();
-    const payload = JSON.stringify(toWire(body));
+    const payload = JSON.stringify(body);
     return this.execute<T>(
       "POST",
       url,
@@ -81,9 +92,9 @@ export class Http {
   }
 
   /**
-   * POST a body verbatim (no camelCase↔snake_case mapping) and decode the response verbatim.
-   * The memory group uses this: its wire fields are already camelCase and a MemoryRecord
-   * `body` is an arbitrary caller payload that must not be key-mapped. Success is 200 only,
+   * POST and decode the response verbatim, skipping even the legacy envelope rename.
+   * The memory group uses this: a MemoryRecord `body` is an arbitrary caller payload, so a
+   * key it happens to spell `created_at` is the caller's, not GL's. Success is 200 only,
    * so a `202 memory.pending` falls through to the typed-error path instead of decoding as a
    * record. Retry/backoff on 429/5xx is unchanged.
    */
@@ -106,7 +117,7 @@ export class Http {
   }
 
   /**
-   * GET a read surface, decoding the snake_case response to camelCase. Query values are
+   * GET a read surface, renaming the legacy snake_case envelope keys. Query values are
    * appended in order; arrays repeat the key (the spec's repeatable `tags`). Shares the
    * same retry/backoff and typed-error path as POST.
    */

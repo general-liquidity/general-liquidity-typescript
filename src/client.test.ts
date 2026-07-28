@@ -4,10 +4,10 @@ import { ApprovalPendingError, PendingSettlementError } from "./internal/errors.
 import { makeIntent, stubFetch, stubSigner } from "./testing/testkit.ts";
 
 describe("createClient / pay", () => {
-  test("signs the intent, auto-generates an idempotency key, and sends snake_case", async () => {
+  test("signs the intent, auto-generates an idempotency key, and sends camelCase", async () => {
     const signer = stubSigner();
     const receiptWire = {
-      intent_key: "k1",
+      intentKey: "k1",
       rail: "x402",
       reference: "0xabc",
       terms: {
@@ -15,10 +15,10 @@ describe("createClient / pay", () => {
         finality: "instant",
         credential: "eip3009",
         rail: "x402",
-        capital_source: "payer",
+        capitalSource: "payer",
         presence: "delegated",
       },
-      settled_at: "2026-07-22T00:00:00Z",
+      settledAt: "2026-07-22T00:00:00Z",
       enforcement: "hash",
     };
     const net = stubFetch([{ body: receiptWire }]);
@@ -31,17 +31,19 @@ describe("createClient / pay", () => {
 
     const receipt = await client.pay(makeIntent());
 
-    // camelCase came back to the caller.
+    // camelCase came back to the caller, unrenamed.
     expect(receipt.intentKey).toBe("k1");
     expect(receipt.terms.capitalSource).toBe("payer");
 
     // signer was invoked (local signing, keys never left the operator).
     expect(signer.calls.length).toBe(1);
 
-    // wire body is snake_case and carries the generated key + signature.
+    // The wire body carries the field names the server validates. This is the assertion the
+    // old suite got backwards: it pinned `idempotency_key`, which /pay rejects as a missing
+    // `idempotencyKey`, so a green suite and a broken client agreed with each other.
     const sent = JSON.parse(net.calls[0]!.init!.body as string);
-    expect(sent.idempotency_key).toBe("gen-key");
-    expect(sent.envelope.mandate_id).toBe("mandate:1");
+    expect(sent.idempotencyKey).toBe("gen-key");
+    expect(sent.envelope.mandateId).toBe("mandate:1");
     expect(sent.envelope.signature).toBe("sig:" + signer.calls[0]!.length);
     expect(net.calls[0]!.init!.headers).toMatchObject({ "idempotency-key": "gen-key" });
   });
@@ -55,7 +57,7 @@ describe("createClient / pay", () => {
     });
     await client.pay(makeIntent({ idempotencyKey: "caller-key" }));
     const sent = JSON.parse(net.calls[0]!.init!.body as string);
-    expect(sent.idempotency_key).toBe("caller-key");
+    expect(sent.idempotencyKey).toBe("caller-key");
   });
 
   test("a 202 clearing.pending decodes as a typed PendingSettlementError, not a Receipt", async () => {
@@ -66,10 +68,10 @@ describe("createClient / pay", () => {
           type: "clearing.pending",
           title: "The bound spend is held pending admissible delivery evidence.",
           status: 202,
-          obligation_id: "obl-7",
+          obligationId: "obl-7",
           state: "pending",
           awaiting: "att",
-          achieved_class: "wit",
+          achievedClass: "wit",
         },
       },
     ]);
@@ -83,7 +85,7 @@ describe("createClient / pay", () => {
     expect(err).toBeInstanceOf(PendingSettlementError);
     expect(err.type).toBe("clearing.pending");
     expect(err.status).toBe(202);
-    // The typed variant decodes the camelCased problem into a PendingSettlement.
+    // The problem body is camelCase as served, so the typed variant reads it directly.
     const settlement = (err as PendingSettlementError).settlement;
     expect(settlement).toEqual({
       type: "clearing.pending",
@@ -118,7 +120,7 @@ describe("createClient / pay", () => {
     expect(err.status).toBe(202);
   });
 
-  test("resolve decodes a snake_case Counterparty", async () => {
+  test("resolve decodes a Counterparty", async () => {
     const net = stubFetch([
       { body: { id: "cp1", transport: "disclosure", capabilities: ["pay"], rails: ["x402"] } },
     ]);
@@ -133,8 +135,72 @@ describe("createClient / pay", () => {
   });
 });
 
+describe("the wire the server actually reads", () => {
+  // These two hold the client to the server rather than to itself. The suite that shipped
+  // before them asserted the SDK's own renaming back to the SDK, so it stayed green while
+  // agreeing with nobody: every /pay was refused for a missing `idempotencyKey`, and every
+  // signature was unverifiable against the body that arrived.
+  //
+  // A true end-to-end test, a real server on a real port with a real client pointed at it,
+  // lives in the platform repo, which is the only place both halves exist. This repo can
+  // only pin the bytes it emits. That is the residual gap, and it is why these assertions
+  // read the request body rather than the client's return value.
+
+  /** Every property name in a request body, recursively. */
+  function fieldNames(value: unknown, out: string[] = []): string[] {
+    if (Array.isArray(value)) for (const item of value) fieldNames(item, out);
+    else if (value && typeof value === "object") {
+      for (const [k, v] of Object.entries(value)) {
+        out.push(k);
+        fieldNames(v, out);
+      }
+    }
+    return out;
+  }
+
+  test("no request body field is snake_case", async () => {
+    const net = stubFetch([{ body: {} }]);
+    const client = createClient({
+      baseUrl: "https://gl.example/",
+      signer: stubSigner(),
+      fetch: net.fetch,
+      newIdempotencyKey: () => "gen-key",
+    });
+    await client.pay(makeIntent());
+
+    const sent = JSON.parse(net.calls[0]!.init!.body as string);
+    const snake = fieldNames(sent).filter((n) => n.includes("_"));
+    expect(snake).toEqual([]);
+    // Named explicitly, since an empty list also passes when nothing was sent at all.
+    expect(fieldNames(sent)).toContain("idempotencyKey");
+    expect(fieldNames(sent)).toContain("capitalSource");
+    expect(fieldNames(sent)).toContain("mandateId");
+    expect(fieldNames(sent)).toContain("expiresAt");
+  });
+
+  test("the bytes signed are the bytes sent", async () => {
+    const signer = stubSigner();
+    const net = stubFetch([{ body: {} }]);
+    const client = createClient({
+      baseUrl: "https://gl.example/",
+      signer,
+      fetch: net.fetch,
+      newIdempotencyKey: () => "gen-key",
+    });
+    await client.pay(makeIntent());
+
+    // The verifier recomputes the preimage from the body it received, blanking the envelope
+    // signature. If anything renames fields between signing and sending, this diverges and
+    // no signature this SDK produces can verify.
+    const sent = JSON.parse(net.calls[0]!.init!.body as string);
+    const recomputed = { ...sent, envelope: { ...sent.envelope, signature: "" } };
+    const signed = JSON.parse(new TextDecoder().decode(signer.calls[0]!));
+    expect(recomputed).toEqual(signed);
+  });
+});
+
 describe("agent read surface", () => {
-  test("getJob GETs /intents/{id} and decodes the snake_case Job", async () => {
+  test("getJob GETs /intents/{id} and renames the Job envelope's legacy keys", async () => {
     const net = stubFetch([
       {
         body: {
@@ -143,7 +209,7 @@ describe("agent read surface", () => {
           created_at: "2026-07-24T00:00:00Z",
           terminal_at: "2026-07-24T00:00:05Z",
           outcome: "allow",
-          receipt: { intent_key: "intent-1", rail: "x402", reference: "0xabc" },
+          receipt: { intentKey: "intent-1", rail: "x402", reference: "0xabc" },
           links: { self: "/intents/intent-1", events: "/intents/intent-1/events" },
         },
       },
@@ -172,7 +238,7 @@ describe("agent read surface", () => {
             {
               type: "intent.settled",
               at: "2026-07-24T00:00:00Z",
-              intent_key: "intent-1",
+              intentKey: "intent-1",
               payload: {},
             },
           ],

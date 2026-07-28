@@ -1,7 +1,10 @@
 // The wire contract, mirrors the General Liquidity OpenAPI spec. Kept in sync via the
 // spec (general-liquidity-openapi).
 //
-// camelCase here; snake_case on the wire. This file is the SDK's own public contract:
+// camelCase here AND on the wire: nothing is renamed between these types and the server
+// that validates them. The three outbound-only envelopes the server still emits
+// snake_case (`Page`, `Job`, `WebhookEvent`) are the exception, renamed on the way in by
+// `internal/canonical.ts`. This file is the SDK's own public contract:
 // the noun/value types the client signs, submits, and decodes, plus the GeneralLiquidity
 // surface it implements. The SDK vendors these so it carries zero workspace dependencies.
 
@@ -397,10 +400,9 @@ export interface WebhookEvent {
   data: Record<string, unknown>;
 }
 
-// The memory capability group: bi-temporal, signed, no-lookahead agent memory. Distinct
-// wire convention from the money path — memory fields are camelCase ON THE WIRE (the
-// server reads `validFrom`/`canRead`/`rootId` verbatim), and a MemoryRecord `body` is an
-// arbitrary caller payload, so these bodies bypass the camelCase↔snake_case mapping.
+// The memory capability group: bi-temporal, signed, no-lookahead agent memory. A
+// MemoryRecord `body` is an arbitrary caller payload, so these bodies bypass even the
+// legacy envelope rename: a key the caller spells `created_at` is the caller's.
 // remember/recall/assemble/verify are AGENT authority; `forget` (cascading erasure) is
 // OPERATOR authority and rides the OperatorClient, not this agent client.
 

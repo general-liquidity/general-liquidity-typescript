@@ -23,7 +23,7 @@ const otelSpanStub = () => ({
 describe("tracing on the surface ops", () => {
   test("pay emits a span carrying traceparent + idempotency-key attributes", async () => {
     const tracer = fakeTracer();
-    const net = stubFetch([{ body: { intent_key: "k1" } }]);
+    const net = stubFetch([{ body: { intentKey: "k1" } }]);
     const client = createClient({
       baseUrl: "https://gl.example/",
       signer: stubSigner(),
@@ -56,7 +56,7 @@ describe("tracing on the surface ops", () => {
     const net = stubFetch([
       { status: 500, body: { type: "server" } },
       { status: 500, body: { type: "server" } },
-      { body: { intent_key: "k1" } },
+      { body: { intentKey: "k1" } },
     ]);
     const client = createClient({
       baseUrl: "https://gl.example/",
@@ -119,7 +119,7 @@ describe("tracing on the surface ops", () => {
 
 describe("noop default", () => {
   test("the client works with no tracer configured and sends no traceparent", async () => {
-    const net = stubFetch([{ body: { intent_key: "k1" } }]);
+    const net = stubFetch([{ body: { intentKey: "k1" } }]);
     const client = createClient({
       baseUrl: "https://gl.example/",
       signer: stubSigner(),

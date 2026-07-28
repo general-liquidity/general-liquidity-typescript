@@ -166,8 +166,8 @@ class GlClient implements GeneralLiquidity {
     );
   }
 
-  // Memory group. Sent verbatim (no camelCase↔snake_case mapping): the memory wire is
-  // already camelCase and a MemoryRecord `body` is an arbitrary caller payload.
+  // Memory group. Read back verbatim, without even the legacy envelope rename: a
+  // MemoryRecord `body` is an arbitrary caller payload whose keys are the caller's.
 
   memoryRemember(req: RememberRequest): Promise<MemoryRecord> {
     return this.traced("memory_remember", (span) =>

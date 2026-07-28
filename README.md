@@ -108,16 +108,24 @@ retry count, and the HTTP status.
 ## Wire contract
 
 The noun and value types live in `src/types.ts`. They mirror the General Liquidity
-OpenAPI spec and are kept in sync via that spec (general-liquidity-openapi). TypeScript is
-camelCase; the wire is snake_case, converted at the HTTP boundary.
+OpenAPI spec and are kept in sync via that spec (general-liquidity-openapi). Field names
+are camelCase here AND on the wire: nothing is renamed at the HTTP boundary, so the body
+the server validates is the body you built, and the canonical bytes the signer signs are
+the bytes that arrive.
+
+Three outbound-only envelopes predate that rule and are still served snake_case: `Page`
+(`has_more`, `next_cursor`), `Job` (`created_at`, `terminal_at`) and `WebhookEvent`
+(`created_at`). Those four names, and only those, are renamed on the way in. No request
+body carries any of them.
 
 ## Read surface and webhooks
 
 Beyond the four core verbs, the agent client exposes read projections over the signed
 audit trail: `getJob(id)` reads the async job resource for one intent (`GET /intents/{id}`),
 `getJobEvents(id, { cursor, limit })` and `getAudit({ cursor, limit })` page the signed
-events, and `getUsage({ since, until, tags })` reads metered call counts. All decode the
-snake_case wire to camelCase.
+events, and `getUsage({ since, until, tags })` reads metered call counts. The `Page` and
+`Job` envelopes they return are the two shapes still served snake_case, renamed on the way
+in as described above.
 
 Webhook endpoint management (`POST/GET/PATCH/DELETE /webhooks/endpoints`) is OPERATOR
 authority, so it rides the `OperatorClient`, not the agent key: `createWebhookEndpoint`,

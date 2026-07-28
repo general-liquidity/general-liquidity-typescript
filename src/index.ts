@@ -4,7 +4,7 @@
 
 export type { ClientConfig } from "./client.ts";
 export { createClient } from "./client.ts";
-export { canonicalBytes, fromWire, toWire } from "./internal/canonical.ts";
+export { canonicalBytes, fromWire } from "./internal/canonical.ts";
 export type { Problem } from "./internal/errors.ts";
 export {
   ApprovalPendingError,
