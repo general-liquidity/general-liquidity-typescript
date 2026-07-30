@@ -14,7 +14,17 @@ import type { Problem } from "./internal/errors.ts";
 export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 /** A payment rail behind pay()/buy(). Vendor + protocol names appear ONLY here as ids. */
-export type RailId = "x402" | "mpp" | "ap2" | "acp" | "ucp" | "card" | "onchain";
+export type RailId =
+  | "x402"
+  | "mpp"
+  | "ap2"
+  | "acp"
+  | "ucp"
+  | "card"
+  | "onchain"
+  | "l402"
+  | "ach"
+  | "wire";
 
 /** The gate's verdict. Deny-first. */
 export type Outcome = "allow" | "confirm" | "deny";
