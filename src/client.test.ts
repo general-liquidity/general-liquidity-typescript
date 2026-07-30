@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { createClient } from "./client.ts";
+import { canonicalBytes } from "./internal/canonical.ts";
 import { ApprovalPendingError, PendingSettlementError } from "./internal/errors.ts";
 import { makeIntent, stubFetch, stubSigner } from "./testing/testkit.ts";
+import type { Mandate } from "./types.ts";
 
 describe("createClient / pay", () => {
   test("signs the intent, auto-generates an idempotency key, and sends camelCase", async () => {
@@ -468,5 +470,100 @@ describe("agent memory surface", () => {
     const sent = JSON.parse(net.calls[0]!.init!.body as string);
     expect(sent).toEqual({ artifact: { hash: "h", signature: "sig" } });
     expect(net.calls[0]!.url).toBe("https://gl.example/memory/verify");
+  });
+});
+
+describe("named decision checks", () => {
+  test("verify returns the evaluated predicates verbatim, ids and all", async () => {
+    const net = stubFetch([
+      {
+        body: {
+          outcome: "deny",
+          reasons: ["payee not on the mandate"],
+          mandateId: "mandate:1",
+          checks: [
+            { id: "mandate.active", passed: true },
+            { id: "mandate.payee_allowed", passed: false },
+            { id: "terms.reversibility_permitted", passed: true },
+          ],
+        },
+      },
+    ]);
+    const client = createClient({
+      baseUrl: "https://gl.example/",
+      signer: stubSigner(),
+      fetch: net.fetch,
+    });
+
+    const decision = await client.verify({
+      document: { agentId: "a1" },
+      signature: { algorithm: "ed25519", publicKey: "a1", value: "sig" },
+    });
+
+    expect(decision.outcome).toBe("deny");
+    // The point of the ids: a caller branches on the failed predicate, not on the prose.
+    expect(decision.checks?.map((c) => c.id)).toEqual([
+      "mandate.active",
+      "mandate.payee_allowed",
+      "terms.reversibility_permitted",
+    ]);
+    expect(decision.checks?.filter((c) => !c.passed).map((c) => c.id)).toEqual([
+      "mandate.payee_allowed",
+    ]);
+  });
+
+  test("a decision without checks decodes with the field absent, not empty", async () => {
+    const net = stubFetch([{ body: { outcome: "allow", reasons: [], mandateId: "mandate:1" } }]);
+    const client = createClient({
+      baseUrl: "https://gl.example/",
+      signer: stubSigner(),
+      fetch: net.fetch,
+    });
+    const decision = await client.verify({
+      document: {},
+      signature: { algorithm: "ed25519", publicKey: "a1", value: "sig" },
+    });
+    expect("checks" in decision).toBe(false);
+  });
+});
+
+describe("the irreversible-outlay bound", () => {
+  test("both forms survive a canonical round-trip and the tighter one is the caller's to read", () => {
+    const mandate: Mandate = {
+      id: "mandate:1",
+      payees: ["eip155:8453:0xabc"],
+      perTxCap: { value: "5000", asset: "USDC" },
+      perPeriodCap: { value: "50000", asset: "USDC" },
+      period: "P30D",
+      expiresAt: "2026-12-31T00:00:00Z",
+      irreversibleOutlay: {
+        maximumAmount: { value: "5000", asset: "USDC" },
+        maximumShareBps: 1000,
+      },
+    };
+
+    const decoded = JSON.parse(new TextDecoder().decode(canonicalBytes(mandate))) as Mandate;
+    expect(decoded.irreversibleOutlay).toEqual({
+      maximumAmount: { value: "5000", asset: "USDC" },
+      maximumShareBps: 1000,
+    });
+  });
+
+  test("a mandate that declares no bound canonicalizes without the key", () => {
+    const base: Mandate = {
+      id: "mandate:1",
+      payees: [],
+      perTxCap: { value: "1", asset: "USDC" },
+      perPeriodCap: { value: "10", asset: "USDC" },
+      period: "P30D",
+      expiresAt: "2026-12-31T00:00:00Z",
+    };
+    const unbounded = new TextDecoder().decode(canonicalBytes(base));
+    expect(unbounded).not.toContain("irreversibleOutlay");
+
+    const bounded = new TextDecoder().decode(
+      canonicalBytes({ ...base, irreversibleOutlay: { maximumShareBps: 1000 } }),
+    );
+    expect(bounded).not.toBe(unbounded);
   });
 });

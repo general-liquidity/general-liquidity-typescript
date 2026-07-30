@@ -62,6 +62,24 @@ export interface Terms {
   presence: Presence;
 }
 
+/**
+ * A bound on how much of a mandate's period cap may be spent UNRECOVERABLY.
+ *
+ * NESTED, not parallel: an irreversible payment counts against the period cap in full AND
+ * against this. A sub-cap with its own allowance would add authority rather than subtract it.
+ *
+ * Both forms may be present, and when they are, the tighter one binds. Operators think in both:
+ * "no more than a tenth of the budget may be unrecoverable" is a fraction, "no more than 50 a
+ * month may be unrecoverable whatever the budget is" is an amount, and neither is expressible as
+ * the other without knowing a cap that changes.
+ */
+export interface IrreversibleOutlayBound {
+  /** Absolute ceiling on irreversible spend in the period. Must be below `perPeriodCap`. */
+  maximumAmount?: Amount;
+  /** Ceiling as basis points of `perPeriodCap`. 1000 is 10%. 10000 is not a bound. */
+  maximumShareBps?: number;
+}
+
 /** Operator-granted, scoped, capped, expiring spend authority. */
 export interface Mandate {
   id: string;
@@ -73,6 +91,12 @@ export interface Mandate {
   period: string;
   /** ISO-8601 instant. */
   expiresAt: string;
+  /**
+   * Typed, enforced and disclosed, unlike `constraints`. Absent on a mandate that declares no
+   * such bound, and an absent key cannot move an RFC 8785 canonicalization, so a mandate without
+   * one hashes into a disclosed policy exactly as it always did.
+   */
+  irreversibleOutlay?: IrreversibleOutlayBound;
   constraints?: Record<string, unknown>;
 }
 
@@ -104,11 +128,25 @@ export interface Intent {
   envelope: Envelope;
 }
 
+/**
+ * One policy predicate the gate evaluated, named by a stable id. Unlike `reasons`,
+ * which is prose for a human, a check is safe to persist, compare across versions
+ * and switch on. The kernel narrows `id` to its own enumerated set; on the wire it
+ * stays a string so a rail or a downstream policy layer can carry its own ids.
+ */
+export interface DecisionCheck {
+  id: string;
+  passed: boolean;
+}
+
 /** The gate's decision on an Intent. */
 export interface Decision {
   outcome: Outcome;
   reasons: string[];
   mandateId: string;
+  /** Predicates actually evaluated, in evaluation order. Optional: a decision
+   *  recorded before checks existed carries none, and absent is not "all passed". */
+  checks?: DecisionCheck[];
 }
 
 /** Durable, machine-parseable proof of settlement. */
