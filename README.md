@@ -70,10 +70,61 @@ const receipt = await gl.pay({
 console.log(receipt.intentKey, receipt.enforcement);
 ```
 
-The surface has four operations: `resolve`, `pay`, `verify`, and `disclose`. Typed
-failures (`InsufficientFundsError`, `MandateExceededError`, `DeniedError`,
+The canonical surface has four operations: `resolve`, `pay`, `verify`, and `disclose`.
+Typed failures (`InsufficientFundsError`, `MandateExceededError`, `DeniedError`,
 `RateLimitError`, and friends) let agents branch deterministically on the problem type
 rather than on prose.
+
+The client also carries the read-back group (`getJob`, `getJobEvents`, `getAudit`,
+`getUsage`), the memory group (`memoryRemember`, `memoryRecall`, `memoryAssemble`,
+`memoryVerify`), and the commerce tier below. Operator authority rides a separate client
+with its own credential — see [Read surface and webhooks](#read-surface-and-webhooks).
+
+## Commerce
+
+`quote` prices a cart against a merchant and commits nothing. `buy` drives that checkout
+to a completed `Order`, authorizing it through the same gate `pay` uses.
+
+```ts
+const cart = await client.quote({
+  rail: "acp",                       // checkout protocols only: acp | ucp
+  merchant: "shop.example",
+  currency: "USD",
+  lines: [{ id: "sku-1", quantity: 2 }],
+});
+
+if (cart.status === "ready") {
+  const order = await client.buy({
+    idempotencyKey: crypto.randomUUID(),
+    rail: "acp",
+    merchant: "shop.example",
+    currency: "USD",
+    lines: [{ id: "sku-1", quantity: 2 }],
+    purpose: "office-supplies",
+    terms,
+    envelope,
+  });
+  console.log(order.id, order.receipt.enforcement);
+}
+```
+
+Four things differ from `pay` and each is deliberate:
+
+- **No amount.** The price is the merchant's, read from the server-authoritative cart, so
+  the request carries lines instead. A caller cannot name its own price.
+- **The replay key is yours to choose.** It rides the body, namespaced apart from `pay`'s,
+  and is required rather than minted when blank — only a caller that chose its own key can
+  safely re-send after a `503 rail.unavailable`, the one outcome the server does not store.
+- **No parked-intent path.** A merchant session cannot be held open across an out-of-band
+  operator approval, so a gate `confirm` arrives as `DeniedError`, not
+  `ApprovalPendingError`. There is nothing for `/operator/approve` to release.
+- **Only `ready` carts can be bought.** Every other `CartStatus` is the refusal reporting
+  what the checkout still needs.
+
+Commerce is typed as its own `Commerce` interface rather than as methods on
+`GeneralLiquidity`. The canonical surface is what every deployment answers; the commerce
+tier is opt-in per stack, and one that did not enable it returns a `not_found` problem on
+both paths. `createClient` returns `GeneralLiquidity & Commerce`, so callers see no seam.
 
 ## The injected Signer seam
 
@@ -120,8 +171,8 @@ body carries any of them.
 
 ## Read surface and webhooks
 
-Beyond the four core verbs, the agent client exposes read projections over the signed
-audit trail: `getJob(id)` reads the async job resource for one intent (`GET /intents/{id}`),
+Beyond the four core verbs and the commerce tier, the agent client exposes read projections
+over the signed audit trail: `getJob(id)` reads the async job resource for one intent (`GET /intents/{id}`),
 `getJobEvents(id, { cursor, limit })` and `getAudit({ cursor, limit })` page the signed
 events, and `getUsage({ since, until, tags })` reads metered call counts. The `Page` and
 `Job` envelopes they return are the two shapes still served snake_case, renamed on the way
