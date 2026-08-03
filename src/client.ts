@@ -5,6 +5,9 @@ import type {
   AssembledContext,
   AssembleRequest,
   AuditEvent,
+  BuyRequest,
+  Cart,
+  Commerce,
   Counterparty,
   Decision,
   Disclosure,
@@ -14,8 +17,10 @@ import type {
   Job,
   MemoryRecord,
   MemoryVerification,
+  Order,
   Page,
   PageQuery,
+  QuoteRequest,
   RecallRequest,
   Receipt,
   RememberRequest,
@@ -49,7 +54,7 @@ const defaultKey = (): string => globalThis.crypto.randomUUID();
  * to the server over HTTP. It never holds a settle primitive — `pay` sends a signed
  * intent and the sovereign gate on the server decides and settles.
  */
-class GlClient implements GeneralLiquidity {
+class GlClient implements GeneralLiquidity, Commerce {
   private readonly http: Http;
   private readonly signer: Signer;
   private readonly newKey: () => string;
@@ -131,6 +136,39 @@ class GlClient implements GeneralLiquidity {
       const value = await this.signer.sign(new TextEncoder().encode(JSON.stringify(document)));
       const publicKey = this.signer.agentId ?? "";
       return { document, signature: { algorithm: "ed25519", publicKey, value } };
+    });
+  }
+
+  // Commerce. Opt-in and default-off server-side: a deployment that did not enable the tier
+  // answers 404 `not_found`, which arrives here as the same typed problem as any other
+  // refusal. The client does not probe for the capability — a missing tier is a server
+  // answer, not a different client shape.
+
+  quote(req: QuoteRequest): Promise<Cart> {
+    // Commits nothing, so no idempotency key and no strict-200: `quote` is a read of the
+    // merchant's pricing, and the Cart it returns is the server-authoritative one.
+    return this.traced("quote", (span) => this.http.post<Cart>("quote", req, {}, span));
+  }
+
+  /**
+   * Drive a merchant checkout to a completed `Order`. The price is never taken from the
+   * caller: it comes from the server-authoritative cart the merchant priced, which is why
+   * this body carries lines and no amount.
+   *
+   * Unlike `pay`, the replay key rides the BODY and is namespaced apart from `/pay`'s, so it
+   * is required rather than auto-generated — a caller that let the SDK mint one silently
+   * could not re-send the identical request after a `503 rail.unavailable`, which is the one
+   * outcome the server does not store precisely so it can be retried.
+   *
+   * There is no parked-intent path here. A merchant session cannot be held open across an
+   * out-of-band operator approval, so a gate `confirm` arrives as `DeniedError` (403) rather
+   * than `ApprovalPendingError`; there is nothing for `/operator/approve` to release.
+   */
+  buy(req: BuyRequest): Promise<Order> {
+    return this.traced("buy", (span) => {
+      span.setAttribute("gl.idempotency_key", req.idempotencyKey);
+      // Money settles on 200 only, as on `pay`.
+      return this.http.post<Order>("buy", req, {}, span, true);
     });
   }
 
@@ -216,7 +254,13 @@ class GlClient implements GeneralLiquidity {
   }
 }
 
-/** Construct an embeddable GeneralLiquidity client bound to a server + operator signer. */
-export function createClient(cfg: ClientConfig): GeneralLiquidity {
+/**
+ * Construct an embeddable GeneralLiquidity client bound to a server + operator signer.
+ *
+ * The returned client carries the commerce tier as well as the canonical surface. Commerce
+ * stays off `GeneralLiquidity` itself because it is opt-in per deployment; calling `quote` or
+ * `buy` against a stack that did not enable it returns a `not_found` problem.
+ */
+export function createClient(cfg: ClientConfig): GeneralLiquidity & Commerce {
   return new GlClient(cfg);
 }

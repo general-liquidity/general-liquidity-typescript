@@ -602,6 +602,101 @@ export interface MemoryVerification {
  * every method is also an MCP tool name. The agent submits signed intents; the
  * sovereign gate decides and settles. The agent never reaches a settle primitive.
  */
+// The commerce tier. Separate from `GeneralLiquidity` on purpose: the canonical surface is
+// the four verbs every deployment answers, and commerce is OPT-IN, DEFAULT-OFF
+// (`StackConfig.commerce`). A stack that did not enable it answers 404 `not_found` on these
+// two paths exactly as if they never existed, so making them required methods on the
+// canonical contract would oblige every implementer to ship an optional tier.
+
+/** The checkout protocols `/quote` and `/buy` dispatch to — a closed subset of `RailId`. */
+export type CheckoutRail = Extract<RailId, "acp" | "ucp">;
+
+/** One requested line: a quantity of one merchant item. Carries no price. */
+export interface CommerceLine {
+  /** The merchant's own item identifier. */
+  id: string;
+  /** A positive integer count. Zero and fractional quantities are refused. */
+  quantity: number;
+}
+
+/** Enough to discover the merchant and price a cart. */
+export interface QuoteRequest {
+  rail: CheckoutRail;
+  merchant: string;
+  currency: string;
+  /** What to price. Must be non-empty. */
+  lines: CommerceLine[];
+}
+
+/**
+ * The quote fields plus the mandate-bearing envelope and terms the authorize beat needs —
+ * the same envelope `/pay` carries, because the same gate evaluates it. No amount appears:
+ * the price is the merchant's, taken from the server-authoritative cart.
+ */
+export interface BuyRequest extends QuoteRequest {
+  /**
+   * Replay key carried in the BODY, not the header, and namespaced apart from `/pay`'s.
+   * Stripped before the checkout engine sees it: the intent the gate evaluates is keyed on
+   * the merchant's own cart id.
+   */
+  idempotencyKey: string;
+  /** What the purchase is for. Evaluated by the gate, as on `/pay`. */
+  purpose: string;
+  terms: Terms;
+  envelope: Envelope;
+}
+
+/** The normalized checkout lifecycle. Only `ready` may be authorized. */
+export type CartStatus =
+  | "priced"
+  | "escalation_required"
+  | "ready"
+  | "authorized"
+  | "completed"
+  | "canceled";
+
+/** A server-authoritative priced checkout state, as `quote` returns it. */
+export interface Cart {
+  /** The merchant's cart id. What the authorize beat is keyed on. */
+  id: string;
+  /** The checkout protocol that priced it. */
+  protocol: string;
+  status: CartStatus;
+  currency: string;
+  total: Amount;
+  merchant: string;
+}
+
+/**
+ * A completed purchase, as `buy` returns it. The merchant stays merchant-of-record; GL
+ * supplied the gated settlement and the receipt that proves it.
+ */
+export interface Order {
+  id: string;
+  /** The cart this order was placed from. */
+  cartId: string;
+  protocol: string;
+  status: CartStatus;
+  merchant: string;
+  /** The settlement Receipt the gated `pay` produced for the authorize beat. */
+  receipt: Receipt;
+  /** ISO-8601 instant. */
+  placedAt: string;
+}
+
+/**
+ * The optional commerce tier. `createClient` always returns these methods; whether they
+ * answer is the deployment's decision, and a stack without the tier returns a `not_found`
+ * problem rather than a different shape.
+ */
+export interface Commerce {
+  /** Price a cart against a merchant. Commits nothing. */
+  quote(req: QuoteRequest): Promise<Cart>;
+
+  /** Drive a merchant checkout to a completed Order through the same gate `/pay` uses. */
+  buy(req: BuyRequest): Promise<Order>;
+}
+
 export interface GeneralLiquidity {
   /** Normalize a counterparty reference into one identity. */
   resolve(ref: string): Promise<Counterparty>;
